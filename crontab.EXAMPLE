@@ -1,0 +1,5 @@
+
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+0 0 1 * * /opt/energy-statistics/poller.py 'http://192.168.1.100/' --password 'myPassword' --receiver user@example.com --sender noreply@example-server.com --energy-diff
+* * * * * /opt/energy-statistics/poller.py 'http://192.168.1.100/' --password 'myPassword' --receiver user@example.com --sender noreply@example-server.com --overflow-warning

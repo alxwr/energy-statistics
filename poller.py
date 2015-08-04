@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import urllib2, urllib, re, argparse, sys, platform
+import urllib2, urllib, re, argparse, sys, platform, os
 from datetime import datetime
 import pytz
 from email.mime.text import MIMEText
@@ -9,12 +9,11 @@ from subprocess import Popen, PIPE
 from urlparse import urljoin
 
 class EnergyStatisticsPoller:
-	def __init__(self, site, password, sender, receiver, log_dir):
+	def __init__(self, site, password, log_dir, cache_dir):
 		self.site = site
 		self.password = password
-		self.sender = sender
-		self.receiver = receiver
 		self.log_dir = log_dir
+		self.cache_dir = cache_dir
 		# Internal variables
 		self.stored_values = None
 
@@ -61,24 +60,34 @@ class EnergyStatisticsPoller:
 			values['energy']
 		)
 
-	def sendmail(self, subject, content):
-		msg = MIMEText(content)
-		msg["From"] = sender
-		msg["To"] = receiver
-		msg["Subject"] = subject
-		p = Popen(["/usr/sbin/sendmail", "-t", "-oi"], stdin=PIPE)
-		p.communicate(msg.as_string())
-
 	def write_to_log(self, values=None):
 		if values == None:
 			values = self.values()
-		with open(self.log_dir+"poller.log", "a") as file:
+		with open(os.path.join(self.log_dir, "poller.log"), "a") as file:
 			file.write(self.logline(values))
 
 	def values(self, fresh=False):
 		if self.stored_values == None or fresh == True:
 			self.stored_values = self.extract_values(self.get_content())
 		return self.stored_values
+
+	def get_energy_diff(self):
+		path = os.path.join(self.cache_dir, 'last_energy.txt')
+		open(path, 'a').close  # touch
+		since = datetime.fromtimestamp(int(os.path.getmtime(path)), pytz.utc).isoformat()
+		with open(path, 'r+') as file:
+			c = file.read()
+			if c == '':
+				last = 0.0
+			else:
+				last = float(c)
+			file.seek(0)
+			file.truncate(0)
+			file.write("{}".format(self.values()['energy']))
+		return dict(
+			amount=(self.values()['energy'] - last),
+			since=since
+		)
 
 class MyParser(argparse.ArgumentParser):
 	def error(self, message):
@@ -89,9 +98,15 @@ class MyParser(argparse.ArgumentParser):
 		self.print_help()
 		sys.exit(2)
 
-if __name__ == "__main__":
+def sendmail(subject, content, sender, receiver):
+	msg = MIMEText(content)
+	msg["From"] = sender
+	msg["To"] = receiver
+	msg["Subject"] = subject
+	p = Popen(["/usr/sbin/sendmail", "-t", "-oi"], stdin=PIPE)
+	p.communicate(msg.as_string())
 
-	#sendmail("energy", "{:.2f}".format(values['energy']), sender, receiver)
+if __name__ == "__main__":
 
 	parser = MyParser(prog="energy-statistics",
 		description="Parse the values of Gembird's LAN Energy Meter")
@@ -100,11 +115,12 @@ if __name__ == "__main__":
 	sender = "gauge@{}".format(platform.node())
 	parser.add_argument('--sender', default='1', help="Default: {}".format(sender))
 	parser.add_argument('--receiver', required=True, help="Email receiver.")
-	logdir = "/var/log/energy-statistics/"
+	logdir = "/var/log/energy-statistics"
 	parser.add_argument('--log-dir', default=logdir, help="Default: {}".format(logdir))
+	cachedir = "/var/spool/energy-statistics"
+	parser.add_argument('--cache-dir', default=cachedir, help="Default: {}".format(cachedir))
 
 	# Additional actions
-	# TODO
 	parser.add_argument('--energy-diff', help="Consumed energy since the last diff.", action='store_true')
 
 	# TODO: Warn on energy rotation
@@ -115,12 +131,20 @@ if __name__ == "__main__":
 	e = EnergyStatisticsPoller(
 		site = args.site,
 		password = args.password,
-		sender = args.sender,
-		receiver = args.receiver,
-		log_dir = args.log_dir
+		log_dir = args.log_dir,
+		cache_dir = args.cache_dir
 	)
 	e.values()
 	e.write_to_log()
 
 	if args.energy_diff:
 		diff = e.get_energy_diff()
+		sendmail(
+			"Energy consumption",
+			"Energy consumption between {} and {}\nwas {:.4f} kWh".format(
+				diff['since'],
+				e.iso8601_utc_timestamp(),
+				diff['amount']),
+			sender,
+			args.receiver)
+
