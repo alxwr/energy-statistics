@@ -8,60 +8,77 @@ from email.mime.text import MIMEText
 from subprocess import Popen, PIPE
 from urlparse import urljoin
 
-def get_content(site, password):
-	login_uri = urljoin(site, '/login.html')
-	gauge_uri = urljoin(site, '/energenie.html')
+class EnergyStatisticsPoller:
+	def __init__(self, site, password, sender, receiver, log_dir):
+		self.site = site
+		self.password = password
+		self.sender = sender
+		self.receiver = receiver
+		self.log_dir = log_dir
+		# Internal variables
+		self.stored_values = None
 
-	login = dict(pw=password)
-	data = urllib.urlencode(login)
-	req = urllib2.Request(login_uri, data)
-	rsp = urllib2.urlopen(req)
+	def get_content(self):
+		login_uri = urljoin(self.site, '/login.html')
+		gauge_uri = urljoin(self.site, '/energenie.html')
 
-	content = urllib2.urlopen(gauge_uri).read()
+		login = dict(pw=self.password)
+		data = urllib.urlencode(login)
+		req = urllib2.Request(login_uri, data)
+		rsp = urllib2.urlopen(req)
 
-	# Logout
-	urllib2.urlopen(login_uri).read()
+		content = urllib2.urlopen(gauge_uri).read()
 
-	return content
+		# Logout
+		urllib2.urlopen(login_uri).read()
 
-def extract_values(content):
-	javascript = re.search('<script>(.+)</script>', content).group(1)
-	voltage = float(re.search('var V.*?=.*?([0-9]+);', javascript).group(1))/10
-	current = float(re.search('var I.*?=.*?([0-9]+);', javascript).group(1))/100
-	power = float(re.search('var P.*?=.*?([0-9]+);', javascript).group(1))/466
-	energy = float(re.search('var E.*?=.*?([0-9]+);', javascript).group(1))/25600
-	return dict(
-		voltage=voltage,
-		current=current,
-		power=power,
-		energy=energy
-	)
+		return content
 
-def iso8601_utc_timestamp():
-	u = datetime.utcnow()
-	u = u.replace(tzinfo=pytz.utc)
-	return u.isoformat()
+	def extract_values(self, content=None):
+		javascript = re.search('<script>(.+)</script>', content).group(1)
+		voltage = float(re.search('var V.*?=.*?([0-9]+);', javascript).group(1))/10
+		current = float(re.search('var I.*?=.*?([0-9]+);', javascript).group(1))/100
+		power = float(re.search('var P.*?=.*?([0-9]+);', javascript).group(1))/466
+		energy = float(re.search('var E.*?=.*?([0-9]+);', javascript).group(1))/25600
+		return dict(
+			voltage=voltage,
+			current=current,
+			power=power,
+			energy=energy
+		)
 
-def logline(values):
-	return "{},{:.2f} V,{:.2f} A,{:.2f} W,{:.2f} kWh\n".format(
-		iso8601_utc_timestamp(),
-		values['voltage'],
-		values['current'],
-		values['power'],
-		values['energy']
-	)
+	def iso8601_utc_timestamp(self):
+		u = datetime.utcnow()
+		u = u.replace(tzinfo=pytz.utc)
+		return u.isoformat()
 
-def sendmail(subject, content, sender, receiver):
-	msg = MIMEText(content)
-	msg["From"] = sender
-	msg["To"] = receiver
-	msg["Subject"] = subject
-	p = Popen(["/usr/sbin/sendmail", "-t", "-oi"], stdin=PIPE)
-	p.communicate(msg.as_string())
+	def logline(self, values):
+		return "{},{:.2f} V,{:.2f} A,{:.2f} W,{:.2f} kWh\n".format(
+			self.iso8601_utc_timestamp(),
+			values['voltage'],
+			values['current'],
+			values['power'],
+			values['energy']
+		)
 
-def write_to_log(values, logdir):
-	with open(logdir+"poller.log", "a") as file:
-		file.write(logline(values))
+	def sendmail(self, subject, content):
+		msg = MIMEText(content)
+		msg["From"] = sender
+		msg["To"] = receiver
+		msg["Subject"] = subject
+		p = Popen(["/usr/sbin/sendmail", "-t", "-oi"], stdin=PIPE)
+		p.communicate(msg.as_string())
+
+	def write_to_log(self, values=None):
+		if values == None:
+			values = self.values()
+		with open(self.log_dir+"poller.log", "a") as file:
+			file.write(self.logline(values))
+
+	def values(self, fresh=False):
+		if self.stored_values == None or fresh == True:
+			self.stored_values = self.extract_values(self.get_content())
+		return self.stored_values
 
 class MyParser(argparse.ArgumentParser):
 	def error(self, message):
@@ -82,18 +99,28 @@ if __name__ == "__main__":
 	parser.add_argument('--password', default='1', help="Default: 1")
 	sender = "gauge@{}".format(platform.node())
 	parser.add_argument('--sender', default='1', help="Default: {}".format(sender))
-	parser.add_argument('--receiver', help="Email receiver.")
+	parser.add_argument('--receiver', required=True, help="Email receiver.")
 	logdir = "/var/log/energy-statistics/"
 	parser.add_argument('--log-dir', default=logdir, help="Default: {}".format(logdir))
 
 	# Additional actions
 	# TODO
-	parser.add_argument('--diff-energy', help="Consumed energy since the last diff.")
+	parser.add_argument('--energy-diff', help="Consumed energy since the last diff.", action='store_true')
 
 	# TODO: Warn on energy rotation
 
 	args = parser.parse_args()
 
 	# Poll device and write to log
-	values = extract_values(get_content(args.site, args.password))
-	write_to_log(values, args.log_dir)
+	e = EnergyStatisticsPoller(
+		site = args.site,
+		password = args.password,
+		sender = args.sender,
+		receiver = args.receiver,
+		log_dir = args.log_dir
+	)
+	e.values()
+	e.write_to_log()
+
+	if args.energy_diff:
+		diff = e.get_energy_diff()
