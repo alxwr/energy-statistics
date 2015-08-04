@@ -1,15 +1,16 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import urllib2, urllib, re
+import urllib2, urllib, re, argparse, sys, platform
 from datetime import datetime
 import pytz
 from email.mime.text import MIMEText
 from subprocess import Popen, PIPE
+from urlparse import urljoin
 
-def get_content(base_uri, password):
-	login_uri = base_uri + 'login.html'
-	gauge_uri = base_uri + 'energenie.html'
+def get_content(site, password):
+	login_uri = urljoin(site, '/login.html')
+	gauge_uri = urljoin(site, '/energenie.html')
 
 	login = dict(pw=password)
 	data = urllib.urlencode(login)
@@ -42,7 +43,7 @@ def iso8601_utc_timestamp():
 	return u.isoformat()
 
 def logline(values):
-	return "{},{:.2f} V,{:.2f} A,{:.2f} W,{:.2f} kWh".format(
+	return "{},{:.2f} V,{:.2f} A,{:.2f} W,{:.2f} kWh\n".format(
 		iso8601_utc_timestamp(),
 		values['voltage'],
 		values['current'],
@@ -58,13 +59,41 @@ def sendmail(subject, content, sender, receiver):
 	p = Popen(["/usr/sbin/sendmail", "-t", "-oi"], stdin=PIPE)
 	p.communicate(msg.as_string())
 
-if __name__ == "__main__":
-	base_uri = "http://192.168.8.99/"
-	password = "SqqRakQ2jVGLQ1ikpWz4"
-	sender = "gauge@ausguck.srv.local"
-	receiver = "aw@sz9i.net"
+def write_to_log(values, logdir):
+	with open(logdir+"poller.log", "a") as file:
+		file.write(logline(values))
 
-	values = extract_values(get_content(base_uri, password))
-	print(logline(values))
-	print(values['energy'])
-	sendmail("energy", "{:.2f}".format(values['energy']), sender, receiver)
+class MyParser(argparse.ArgumentParser):
+	def error(self, message):
+		if len(sys.argv)==1:
+			parser.print_help()
+			sys.exit(1)
+		sys.stderr.write('error: %s\n' % message)
+		self.print_help()
+		sys.exit(2)
+
+if __name__ == "__main__":
+
+	#sendmail("energy", "{:.2f}".format(values['energy']), sender, receiver)
+
+	parser = MyParser(prog="energy-statistics",
+		description="Parse the values of Gembird's LAN Energy Meter")
+	parser.add_argument('site', help="HTTP URI of the site to query.")
+	parser.add_argument('--password', default='1', help="Default: 1")
+	sender = "gauge@{}".format(platform.node())
+	parser.add_argument('--sender', default='1', help="Default: {}".format(sender))
+	parser.add_argument('--receiver', help="Email receiver.")
+	logdir = "/var/log/energy-statistics/"
+	parser.add_argument('--log-dir', default=logdir, help="Default: {}".format(logdir))
+
+	# Additional actions
+	# TODO
+	parser.add_argument('--diff-energy', help="Consumed energy since the last diff.")
+
+	# TODO: Warn on energy rotation
+
+	args = parser.parse_args()
+
+	# Poll device and write to log
+	values = extract_values(get_content(args.site, args.password))
+	write_to_log(values, args.log_dir)
