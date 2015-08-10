@@ -89,6 +89,24 @@ class EnergyStatisticsPoller:
 			since=since
 		)
 
+	def energy_cache_path(self):
+		return os.path.join(self.cache_dir, 'energy_cache.txt')
+
+	def get_energy_cache(self):
+		try:
+			with open(self.energy_cache_path()) as file:
+				content = file.read()
+				return float(content)
+		except IOError:
+			print("{} did not exist.".format(self.energy_cache_path()))
+
+	def set_energy_cache(self):
+		try:
+			with open(self.energy_cache_path(), 'w') as file:
+				file.write("{:.6f}".format(self.values()['energy']))
+		except IOError:
+			print("{} did not exist.".format(self.energy_cache_path()))
+
 class MyParser(argparse.ArgumentParser):
 	def error(self, message):
 		if len(sys.argv)==1:
@@ -122,8 +140,7 @@ if __name__ == "__main__":
 
 	# Additional actions
 	parser.add_argument('--energy-diff', help="Consumed energy since the last diff.", action='store_true')
-
-	# TODO: Warn on energy rotation
+	parser.add_argument('--overflow-warning', help="Warn by email if the energy counter begins at 0.", action='store_true')
 
 	args = parser.parse_args()
 
@@ -137,6 +154,19 @@ if __name__ == "__main__":
 	e.values()
 	e.write_to_log()
 
+	if args.overflow_warning:
+		cached_value = e.get_energy_cache();	
+		if cached_value > e.values()['energy']:
+			sendmail(
+				"Energy conter OVERFLOW",
+				"It jumped from {} kWh to {} kWh.".format(
+					cached_value,
+					e.values()['energy']
+				),
+				sender,
+				args.receiver)
+		e.set_energy_cache();
+
 	if args.energy_diff:
 		diff = e.get_energy_diff()
 		sendmail(
@@ -147,4 +177,3 @@ if __name__ == "__main__":
 				diff['amount']),
 			sender,
 			args.receiver)
-
